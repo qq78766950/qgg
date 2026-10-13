@@ -1,0 +1,102 @@
+# heiliao.com · Quantumult X 去广告说明（精简版 v3）
+
+## 这一版只做两件事
+
+| # | 去掉什么 | 在哪 |
+|---|---|---|
+| ① | **弹窗广告**（自动弹出的广告图 + 弹窗里的广告九宫格） | 首页 / 列表页 |
+| ② | **「页数」下面那条横幅广告** | 分页区（跳转至 __ 页 / GO）下方 |
+
+**其它一律不碰**：不封域名、不拦脚本、不动图片、不碰列表卡片、不碰浮窗、不碰文章页广告位。
+
+对比之前那版：v2 里所有会牵连图片的规则（`img.fill-img:not(...)`、`.video-item:has(...)`、`reject-200` 掐 `slot-ads.js`、`reject-dict` 掐 `popup-feed.json`、64 条域名 reject）**已全部删除**。现在整个配置只有 1 条规则 + 1 行 MITM 域名。
+
+---
+
+## 规则内容（就一条）
+
+```ini
+[rewrite_local]
+^https?://[^/]+/(?!static/|usr/|upload|watch/|menu|favicon|html/)[^.?#]*(?:[?#]|$) url response-body </head> response-body <style>.component-advertises,.pgx-slot[data-slot="b1"]{display:none!important}</style></head>
+```
+
+`[mitm] hostname = %APPEND% ...`（见 conf 文件，站点域名必须在这里面，否则改写不生效）
+
+---
+
+## 依据：这两处为什么用这个选择器
+
+抓取站点真实 HTML，并用 Chrome 把页面跑起来看**运行后的真实 DOM**，两处目标的容器名都是站点自己的固定实现，广告素材怎么轮换都不受影响：
+
+### ① 弹窗广告 → 全部装在同一个容器里
+
+```html
+<div class="component-advertises">            ← 唯一的弹窗总容器
+  <div class="van-popup van-popup--center">   ← 弹窗 1
+    <div class="pgx-slot" data-slot="pop_notice" ...>  ← 弹窗广告图
+  <div class="van-popup van-popup--center">   ← 弹窗 2 / 3 / 4 同样是 pop_notice
+  <div class="van-popup van-popup--center">   ← 弹窗 5
+    <div class="pgx-slot" data-slot="pop_grid" data-page_name="首页"> ← 弹窗里的广告九宫格
+  <div class="van-overlay">                   ← 弹窗遮罩，也在这个容器内部
+```
+
+实测该容器内有 **5 个 van-popup**（4 个 `pop_notice` 广告图 + 1 个 `pop_grid` 九宫格）、**1 个遮罩**，且**不含**红包弹窗、登录框（搜索 `redpack` / `login` 均为 0）。
+→ 隐藏 `.component-advertises`：弹窗、九宫格、遮罩一次性消失，无残留。容器外全文档再无任何 `pop_notice` / `van-popup--center` 残留。
+
+### ② 页数下面的横幅 → 紧跟在分页后面
+
+```html
+... <div class="jump-button page-jump-btn" ...>GO</div>   ← 分页/跳转
+<!-- 广告组件 -->
+<div class="pgx-slot" data-slot="b1" data-variant="banner"
+     style="aspect-ratio: 950 / 2021.3; margin-bottom: 0.5rem; width: 100%;"></div>
+<div class="component-advertises">  ← 紧接着就是弹窗容器
+```
+
+`data-slot="b1"` 全站每页只有 1 个，位置就在分页正下方。
+→ 隐藏它：横幅和它预留的高度（`aspect-ratio: 950/2021.3`，相当高）一起消失，**不会留下大片空白**。
+
+---
+
+## 实测验证（重点）
+
+用本地反代精确复刻 QX 行为（HTML 注入同一段 CSS）后，用 Chrome 跑起来读**计算样式**，首页与 `/page/3/` 结果一致：
+
+| 检查项 | 首页 | 第3页 | 说明 |
+|---|---|---|---|
+| 弹窗容器 display | `none` | `none` | ✅ 弹窗已隐藏 |
+| 横幅 `b1` display | `none` | `none` | ✅ 横幅已隐藏 |
+| `img.fill-img` 被 CSS 隐藏的数量 | **0 / 35** | **0 / 35** | ✅ **没有任何一张图被隐藏** |
+| 列表格子可见数 | **30 / 30** | **30 / 30** | ✅ 列表完全保留 |
+| 广告位总数 / 被本规则隐藏 | 7 / 1 | 7 / 1 | ✅ 只动了 b1 这一个 |
+
+也就是说：**这版规则在结构上不可能再造成图片不显示或裂图**，因为它根本不包含任何针对 `<img>` 的选择器，也不拦任何请求，只是把两个广告容器 `display:none`。
+
+---
+
+## 使用注意
+
+1. 把 `[rewrite_local]` 和 `[mitm]` 两段并入你的配置；**不需要 `[filter_local]`**。
+2. 必须开启 **重写(Rewrite)** 并**安装 + 完全信任 Quantumult X 证书**，否则不生效。
+3. 改完建议下拉刷新一次（或清 Safari 缓存），避免命中旧缓存。
+4. 站点换新线路域名时，把新域名（或它的通配，如 `*.xxxx.cc`）追加到 `[mitm] hostname` 即可。
+
+## 明确未做的（按你的要求）
+
+| 位置 | 容器 | 状态 |
+|---|---|---|
+| 浮窗广告（页面角落悬浮按钮） | `pgx-slot[data-slot="float"]` | 保留，未处理 |
+| 文章详情页内广告位 | `pgx-slot[data-slot="c1"/"c2"/"b2"]` | 保留，未处理 |
+| 底部弹出弹窗 | `.bottom-ads` | 保留，未处理 |
+
+将来想加，只要把对应选择器追加进那条 CSS 即可（conf 文件末尾有注释说明）。
+
+---
+
+## 排查小抄（万一以后失效）
+
+这三个容器名是站点自己的实现，如果哪天广告又出现：
+
+1. 手机浏览器打开页面 → 长按广告 → 检查元素，看它外层容器的 `class` 或 `data-slot`；
+2. 把新容器名追加到那条 CSS 里（逗号分隔）；
+3. 只要往 `display:none` 里加选择器就不会有副作用，**不要**改成拦截请求或针对 `<img>` 的选择器。
